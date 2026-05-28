@@ -1,7 +1,7 @@
 ---
 name: patent-disclosure-skill
 description: "通用中国专利挖掘发现与交底书生成全流程：扫描项目文档挖掘专利点、讨论融合、基于脱敏模版生成技术交底书、联网查新、生成后自检含逻辑闭环与公式参数一致性。| Patent mining, disclosure drafting, prior-art search, and consistency self-check."
-version: "1.8.7"
+version: "1.8.9"
 user-invocable: true
 argument-hint: "[可选：项目路径或技术主题关键词]"
 allowed-tools: Read, Write, Edit, Grep, Glob, WebSearch, Bash
@@ -14,7 +14,7 @@ allowed-tools: Read, Write, Edit, Grep, Glob, WebSearch, Bash
 ## 环境与约定
 
 - **语言**：默认与用户语种一致；专利与法律术语采用行业常用表述。
-- **图示定稿（Step 7）**：**3.2**/**3.4** 用 fenced **mermaid**；执行方式、**`mmdc`** 安装与降级规则见下表「交底书定稿交付」行及 **`tools/README.md`**（正文不要求 ASCII 框图或 PlantUML）。
+- **图示定稿（Step 7）**：**3.2**/**3.4** 用 fenced **mermaid**；执行方式、**`mmdc`** 安装与降级规则见下表「交底书定稿交付」行及 **`tools/README.md`**。
 
 ---
 
@@ -59,7 +59,7 @@ allowed-tools: Read, Write, Edit, Grep, Glob, WebSearch, Bash
 | Step 3–4 | `prompts/patent_points_analyzer.md` | 候选专利点、融合与选定 |
 | Step 5 | `prompts/prior_art_search.md` | 联网查新与分析要求 |
 | Step 6 | `prompts/disclosure_preview.md` | 全文前的摘要预览 |
-| Step 7 | `prompts/disclosure_builder.md` + `prompts/template_reference.md` | 交底书结构、脱敏与图示规范；**mermaid 系统框图与流程图范例在 template_reference** |
+| Step 7 | `prompts/disclosure_builder.md` + `prompts/template_reference.md` | 交底书结构、脱敏、**符号与公式体例（§7.7）**与图示规范；**mermaid 与 3.4.1 符号/公式范例在 template_reference** |
 | Step 8 | `prompts/disclosure_self_check.md` | 内部自检，不写入正文 |
 | 迭代 | `prompts/iteration_context.md` | 迭代意图、落盘命名、**修订对话记录 md**（含对话/记录时间） |
 | 迭代 | `prompts/merger.md` | 新材料增量合并；**文首含门禁**；输出 `{案件名}_{时间戳}.md`/`.docx` |
@@ -100,7 +100,7 @@ allowed-tools: Read, Write, Edit, Grep, Glob, WebSearch, Bash
 □ 执行 merger / correction_handler 后，已在对话中输出该文件要求的留档摘要（合并摘要 / 纠正摘要）；案件目录已追加 **`交底书修订对话记录.md`**（或等价日志）
 □ 查新完成且写入 1.1 与区别论述（符合 `prior_art_search.md`：**优先** `tools/cnipa_epub_search.py`，**国知局侧已分多次调用、每轮一词，并已自行合并** `EPUB_HITS_JSON`；**`abstract` 必用且已充分理解后再概括**；异常或无果再 **WebSearch**）
 □ 除用户明确跳过外，完成摘要预览
-□ 脱敏、mermaid（定稿均已渲染为 PNG）、章节引用符合 template_reference；**已交付 .md 与 .docx**，且**文件名符合 §7.3 第 5 点**（**凡交付均含**时间戳后缀）；**正文无**技能/示例仓库类文末脚注
+□ 脱敏、mermaid（定稿均已渲染为 PNG）、章节引用符合 template_reference；含公式时 **3.4.1 符号表、§7.7 体例**（维度下标、无字母多义、LaTeX 分隔符统一）及 **3.5 符号列同形** 已满足；**已交付 .md 与 .docx**，且**文件名符合 §7.3 第 5 点**（**凡交付均含**时间戳后缀）；**正文无**技能/示例仓库类文末脚注
 □ 定稿类对话已含 **`disclosure_builder.md` §7.6**「权利要求偏向点」建议交互（**不入正文**、**不捏造**未在稿内出现的保护取向）；迭代再走 merger 时见 **`iteration_context.md`** 表格补充行
-□ 自检在后台完成，正文无自检清单章节
+□ 自检在后台完成，正文无自检清单章节；含公式时已按 **`disclosure_self_check.md` §8.2** 复核**公式正确性与公式逻辑**（有误已在 Step 8 直接改稿）
 ```

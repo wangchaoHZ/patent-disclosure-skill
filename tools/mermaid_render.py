@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-将 Markdown 中的 **mermaid**（`` ```mermaid`` ``）围栏块逐块渲染为 PNG，
-并在输出 Markdown 中用 ``![](相对路径)`` 替换原代码块，便于 ``md_to_docx.py`` 将图嵌入 Word。
+将 Markdown 中的 **mermaid** 围栏与（默认）**LaTeX 公式** 转为 PNG，再写定稿 `.md` 并默认生成 Word。
+
+**公式**：默认先调用同目录 **`math_render.py`**（``matplotlib``；``--no-math`` 可跳过）。**Mermaid** 围栏块逐块渲染为 PNG，**保留** `` ```mermaid`` … `` ``` `` 源码，并在其后追加 HTML 注释
+``<!-- ![图示](相对路径) -->``（预览不显示图），便于 ``md_to_docx.py`` 将图嵌入 Word（Word **仅**嵌 PNG，不写 mermaid 代码块）。
 
 **Mermaid 渲染后端（``mmdc``）**检测顺序见 ``_find_mmdc_invocation``：
 1. ``tools/node_modules``（``npm install`` 官方 ``@mermaid-js/mermaid-cli``）；
@@ -149,6 +151,17 @@ def _render_one_mermaid(
 
 _MMD_START = re.compile(r"^```mermaid\s*$", re.IGNORECASE)
 _MMD_END = re.compile(r"^```\s*$")
+_MERMAID_HIDDEN_COMMENT_RE = re.compile(
+    r"<!--\s*!\[([^\]]*)\]\(([^)]+)\)\s*-->"
+)
+
+
+def _is_mermaid_figure_comment(alt: str, src: str) -> bool:
+    s = src.strip().replace("\\", "/")
+    if "mermaid_figures" in s:
+        return True
+    a = alt.strip()
+    return a.startswith("图示") or a.startswith("图 ")
 
 
 def render_markdown_mermaid(
@@ -164,6 +177,8 @@ def render_markdown_mermaid(
     返回 (新 markdown 全文, 成功转为 PNG 的块数, 生图失败而保留围栏的块数)。
     资源目录为 out_md_path.parent / assets_rel。
     失败的块原样写回 `` ```mermaid`` … `` ``` ``，不抛错。
+    成功的块写回围栏源码 + 紧随其后的 ``<!-- ![图示](…) -->``（与 ``math_render`` 保留 LaTeX 原文同理）。
+    若围栏后已有 mermaid 图示注释，则视为已处理，原样跳过（可重复跑脚本）。
     """
     lines = md_text.splitlines(keepends=True)
     out: list[str] = []
@@ -186,6 +201,27 @@ def render_markdown_mermaid(
             closing = lines[i] if i < len(lines) else "```\n"
             if i < len(lines):
                 i += 1
+
+            # 已定稿：围栏 + 图示注释，不重复渲染
+            j = i
+            while j < len(lines) and lines[j].strip() == "":
+                j += 1
+            if j < len(lines):
+                cm = _MERMAID_HIDDEN_COMMENT_RE.match(lines[j].strip())
+                if cm and _is_mermaid_figure_comment(cm.group(1), cm.group(2)):
+                    out.append(fence_open)
+                    out.extend(body)
+                    if not closing.endswith("\n"):
+                        closing = closing + "\n"
+                    out.append(closing)
+                    while i < j:
+                        out.append(lines[i])
+                        i += 1
+                    out.append(lines[i])
+                    i += 1
+                    ok += 1
+                    continue
+
             block_idx += 1
             fname = f"fig_{ok + 1:03d}.png"
             png_path = assets_dir / fname
@@ -213,9 +249,12 @@ def render_markdown_mermaid(
                 continue
             ok += 1
             rel = f"{assets_rel.strip('/')}/{fname}".replace("\\", "/")
-            out.append("\n")
-            out.append(f"![图示 {ok}]({rel})\n")
-            out.append("\n")
+            out.append(fence_open)
+            out.extend(body)
+            if not closing.endswith("\n"):
+                closing = closing + "\n"
+            out.append(closing)
+            out.append(f"<!-- ![图示 {ok}]({rel}) -->\n")
             continue
         out.append(line)
         i += 1
@@ -323,6 +362,16 @@ def main(argv: list[str] | None = None) -> int:
         help="不生成 Word，仅输出替换图片后的 Markdown",
     )
     p.add_argument(
+        "--no-math",
+        action="store_true",
+        help="不渲染 LaTeX 公式（默认先 math_render 再 mermaid）",
+    )
+    p.add_argument(
+        "--math-assets-dir",
+        default="math_figures",
+        help="公式 PNG 相对 -o 输出 .md 的子目录（默认 math_figures）",
+    )
+    p.add_argument(
         "--mmdc-scale",
         type=float,
         default=2.0,
@@ -363,6 +412,27 @@ def main(argv: list[str] | None = None) -> int:
         md = in_path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         md = in_path.read_text(encoding="utf-8", errors="replace")
+
+    math_ok = math_fail = 0
+    if not getattr(args, "no_math", False):
+        try:
+            from math_render import render_markdown_math
+
+            md, math_ok, math_fail = render_markdown_math(
+                md,
+                out_md_path=out_path,
+                assets_rel=getattr(args, "math_assets_dir", "math_figures"),
+            )
+            if math_ok or math_fail:
+                parts_m = [f"公式：{math_ok} 处已转为 PNG"]
+                if math_fail:
+                    parts_m.append(f"，{math_fail} 处失败已保留原文")
+                print("[mermaid_render] " + "".join(parts_m), file=sys.stderr)
+        except ImportError:
+            print(
+                "[mermaid_render] 未安装 matplotlib，跳过公式渲染（pip install matplotlib）",
+                file=sys.stderr,
+            )
 
     new_md, n_ok, n_fail = render_markdown_mermaid(
         md,

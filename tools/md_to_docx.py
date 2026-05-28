@@ -10,7 +10,7 @@
 **连续多行正文**（中间无空行、且非列表/标题等）时，**每一行**输出为 Word 中**独立一段**，
 以便「（1）…（2）…」等分条换行；若须在同一段内接排，请写**同一行**内或用 Markdown 空行分隔逻辑段。
 
-定稿宜先用同目录 **`mermaid_render.py`** 将 **mermaid** 转为 PNG；若个别块生图失败仍保留 `` ```mermaid`` 围栏，本文档会将其作为**代码块**写入 Word。
+定稿宜先用同目录 **`mermaid_render.py`** 将 **mermaid** 转为 PNG；**LaTeX 公式**（``$...$`` / ``$$...$$``）由 **`math_render.py`**（或 ``md_to_docx`` 自动调用）转为 PNG；失败时保留原文写入 Word。
 
 用法：
   python md_to_docx.py --input disclosure.md --output disclosure.docx
@@ -27,12 +27,64 @@ import sys
 from pathlib import Path
 
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 # 插图最大尺寸（英寸）：在常见 A4、默认边距下保证整图可见、按比例缩放（不过宽也不过高）。
 _DEFAULT_IMAGE_MAX_W_IN = 5.5
 _DEFAULT_IMAGE_MAX_H_IN = 8.2
+# 公式图在 Word 中统一按固定高度嵌入（英寸），避免块级式随 PNG 像素被放大、行内式过小
+_FORMULA_DISPLAY_MAX_H_IN = 0.17
+# 兼容旧名
+_FORMULA_INLINE_MAX_H_IN = _FORMULA_DISPLAY_MAX_H_IN
+_FORMULA_BLOCK_MAX_W_IN = 4.0  # 仅作块级超宽时的宽度上限（通常由固定高度约束）
+_FORMULA_BLOCK_MAX_H_IN = _FORMULA_DISPLAY_MAX_H_IN
+
+_MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+_HIDDEN_MD_IMAGE_COMMENT_RE = re.compile(
+    r"<!--\s*!\[([^\]]*)\]\(([^)]+)\)\s*-->"
+)
+_INLINE_MATH_WITH_HIDDEN_IMG_RE = re.compile(
+    r"(?<!\$)\$(?!\$)((?:\\.|[^$\n])+?)\$(?!\$)\s*"
+    r"<!--\s*!\[([^\]]*)\]\(([^)]+)\)\s*-->"
+)
+_INLINE_MATH_PAREN_WITH_HIDDEN_IMG_RE = re.compile(
+    r"\\\(((?:\\.|[^)])+?)\\\)\s*"
+    r"<!--\s*!\[([^\]]*)\]\(([^)]+)\)\s*-->"
+)
+
+
+def _parse_hidden_image_comment(line: str) -> tuple[str, str] | None:
+    m = _HIDDEN_MD_IMAGE_COMMENT_RE.match(line.strip())
+    if not m:
+        return None
+    return m.group(1), m.group(2).strip()
+
+
+def _try_embed_hidden_comment_line(
+    doc: Document,
+    line: str,
+    base_dir: Path | None,
+    *,
+    image_max_w_in: float,
+    image_max_h_in: float,
+) -> bool:
+    hidden = _parse_hidden_image_comment(line)
+    if not hidden or not base_dir:
+        return False
+    alt, src = hidden
+    if not _resolve_image_path(src, base_dir):
+        return False
+    _embed_from_image_ref(
+        alt,
+        src,
+        base_dir,
+        doc=doc,
+        image_max_w_in=image_max_w_in,
+        image_max_h_in=image_max_h_in,
+    )
+    return True
 
 
 def _image_pixel_size(path: Path) -> tuple[int, int] | None:
@@ -104,6 +156,251 @@ def _fit_image_display_inches(
     return Inches(aw), Inches(ah)
 
 
+def _formula_image_kind(alt: str, src: str) -> str | None:
+    """返回 ``block`` / ``inline`` 表示公式图，否则 None（含注释内引用）。"""
+    a = alt or ""
+    s = src.replace("\\", "/")
+    if "math_figures" not in s and "公式" not in a:
+        return None
+    if "行内" in a:
+        return "inline"
+    return "block"
+
+
+def _is_diagram_image(alt: str, src: str) -> bool:
+    """mermaid 系统框图 / 流程图等（非公式，用全幅插图尺寸）。"""
+    a = alt or ""
+    s = src.replace("\\", "/")
+    if "mermaid_figures" in s:
+        return True
+    if a.startswith("图示") or a.startswith("图 "):
+        return True
+    return False
+
+
+def _span_overlaps(spans: list[tuple[int, int]], start: int, end: int) -> bool:
+    return any(not (end <= s or start >= e) for s, e in spans)
+
+
+def _embed_from_image_ref(
+    alt: str,
+    src: str,
+    base_dir: Path | None,
+    *,
+    doc: Document | None = None,
+    paragraph=None,
+    image_max_w_in: float = _DEFAULT_IMAGE_MAX_W_IN,
+    image_max_h_in: float = _DEFAULT_IMAGE_MAX_H_IN,
+) -> None:
+    """按公式 / 框图 / 普通图规则嵌入 PNG（仅公式用小尺寸）。"""
+    ipath = _resolve_image_path(src, base_dir) if base_dir else None
+    missing = f"[图片缺失: {alt or src}]"
+    if not ipath:
+        if paragraph is not None:
+            paragraph.add_run(missing)
+        elif doc is not None:
+            doc.add_paragraph().add_run(missing)
+        return
+
+    kind = _formula_image_kind(alt, src)
+    if kind == "inline":
+        p = paragraph
+        if p is None and doc is not None:
+            p = doc.add_paragraph()
+            p.paragraph_format.space_after = Pt(6)
+            p.paragraph_format.line_spacing = 1.15
+        if p is not None:
+            _embed_picture_inline(p, ipath, max_h_in=_FORMULA_DISPLAY_MAX_H_IN)
+        return
+
+    if doc is None:
+        if paragraph is not None:
+            paragraph.add_run(missing)
+        return
+
+    if kind == "block":
+        p = doc.add_paragraph()
+        p.paragraph_format.space_after = Pt(6)
+        p.paragraph_format.space_before = Pt(3)
+        _embed_picture_inline(
+            p,
+            ipath,
+            max_h_in=_FORMULA_DISPLAY_MAX_H_IN,
+            max_w_in=_FORMULA_BLOCK_MAX_W_IN,
+        )
+    else:
+        _embed_picture(
+            doc,
+            ipath,
+            alt=alt,
+            src=src,
+            max_w_in=image_max_w_in,
+            max_h_in=image_max_h_in,
+            center=False,
+        )
+
+
+def _maybe_render_math_md(md_text: str, base_dir: Path) -> str:
+    """若含 LaTeX 公式则尝试调用 ``math_render``（已注释的 PNG 引用会跳过）。"""
+    if not re.search(r"\$\$|\\\[|\\\(|(?<!\$)\$(?!\$)", md_text):
+        return md_text
+    try:
+        from math_render import render_markdown_math
+    except ImportError:
+        print(
+            "[md_to_docx] 未安装 matplotlib，公式将按原文写入 Word",
+            file=sys.stderr,
+        )
+        return md_text
+    stub = base_dir / "_md_to_docx_math_stub.md"
+    new_md, ok, failed = render_markdown_math(
+        md_text,
+        out_md_path=stub,
+        assets_rel="math_figures",
+    )
+    if ok or failed:
+        print(
+            f"[md_to_docx] 公式渲染：{ok} 成功，{failed} 保留原文",
+            file=sys.stderr,
+        )
+    return new_md
+
+
+def _add_math_fallback_block(doc: Document, lines: list[str]) -> None:
+    """未渲染成功的 ``$$ ... $$`` 以等宽原文写入 Word。"""
+    body = [ln.rstrip("\n") for ln in lines]
+    _add_code_block(doc, ["$$", *body, "$$"])
+
+
+def _embed_picture(
+    doc: Document,
+    path: Path,
+    *,
+    alt: str,
+    src: str,
+    max_w_in: float,
+    max_h_in: float,
+    center: bool,
+) -> None:
+    p = doc.add_paragraph()
+    if center:
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_after = Pt(6)
+    p.paragraph_format.space_before = Pt(3)
+    try:
+        dims = _image_pixel_size(path)
+        if dims:
+            w_in, h_in = _fit_image_display_inches(
+                *dims, max_w_in=max_w_in, max_h_in=max_h_in
+            )
+            run = p.add_run()
+            run.font.bold = False
+            run.add_picture(str(path.resolve()), width=w_in, height=h_in)
+        else:
+            run = p.add_run()
+            run.font.bold = False
+            run.add_picture(str(path.resolve()), width=Inches(max_w_in))
+    except Exception:
+        p.add_run(f"[图片无法嵌入: {alt or src} — {path}]")
+
+
+def _embed_picture_inline(
+    paragraph,
+    path: Path,
+    *,
+    max_h_in: float,
+    max_w_in: float | None = None,
+) -> None:
+    try:
+        dims = _image_pixel_size(path)
+        run = paragraph.add_run()
+        run.font.bold = False
+        if dims:
+            px_w, px_h = dims
+            h_in = max_h_in
+            w_in = h_in * px_w / px_h if px_h else max_h_in
+            if max_w_in is not None and w_in > max_w_in:
+                w_in = max_w_in
+                h_in = w_in * px_h / px_w if px_w else max_h_in
+            run.add_picture(str(path.resolve()), width=Inches(w_in), height=Inches(h_in))
+        else:
+            run.add_picture(str(path.resolve()), height=Inches(max_h_in))
+    except Exception:
+        paragraph.add_run(f"[行内公式图缺失: {path}]")
+
+
+def _add_rich_content_to_paragraph(
+    paragraph,
+    text: str,
+    base_dir: Path | None,
+    *,
+    formula_inline_max_h_in: float = _FORMULA_DISPLAY_MAX_H_IN,
+    image_max_w_in: float = _DEFAULT_IMAGE_MAX_W_IN,
+    image_max_h_in: float = _DEFAULT_IMAGE_MAX_H_IN,
+    mono: bool = False,
+) -> None:
+    """同一段内混排文字（**粗体**/`代码`）与公式/插图（含 HTML 注释隐藏引用）。"""
+    taken: list[tuple[int, int]] = []
+    tokens: list[tuple[int, int, str, tuple]] = []
+
+    for m in _INLINE_MATH_WITH_HIDDEN_IMG_RE.finditer(text):
+        tokens.append((m.start(), m.end(), "math_img", (m.group(2), m.group(3).strip())))
+        taken.append((m.start(), m.end()))
+
+    for m in _INLINE_MATH_PAREN_WITH_HIDDEN_IMG_RE.finditer(text):
+        if _span_overlaps(taken, m.start(), m.end()):
+            continue
+        tokens.append((m.start(), m.end(), "math_img", (m.group(2), m.group(3).strip())))
+        taken.append((m.start(), m.end()))
+
+    for m in _HIDDEN_MD_IMAGE_COMMENT_RE.finditer(text):
+        if _span_overlaps(taken, m.start(), m.end()):
+            continue
+        tokens.append((m.start(), m.end(), "hidden_img", (m.group(1), m.group(2).strip())))
+        taken.append((m.start(), m.end()))
+
+    for m in _MD_IMAGE_RE.finditer(text):
+        if _span_overlaps(taken, m.start(), m.end()):
+            continue
+        tokens.append((m.start(), m.end(), "visible_img", (m.group(1), m.group(2).strip())))
+        taken.append((m.start(), m.end()))
+
+    inline_pat = re.compile(r"(\*\*[^*]+?\*\*|`[^`]+?`)")
+    for m in inline_pat.finditer(text):
+        if _span_overlaps(taken, m.start(), m.end()):
+            continue
+        tokens.append((m.start(), m.end(), "inline", (m.group(1),)))
+        taken.append((m.start(), m.end()))
+
+    tokens.sort(key=lambda t: t[0])
+    pos = 0
+    for start, end, kind, payload in tokens:
+        if start > pos:
+            _add_inline_to_paragraph(paragraph, text[pos:start], mono=mono)
+        if kind == "inline":
+            token = payload[0]
+            if token.startswith("**"):
+                run = paragraph.add_run(token[2:-2])
+                _set_run_font(run, "宋体", 10.5, bold=True)
+            else:
+                run = paragraph.add_run(token[1:-1])
+                _set_run_font(run, "Consolas", 9)
+                run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+        else:
+            alt, src = payload[0], payload[1]
+            _embed_from_image_ref(
+                alt,
+                src,
+                base_dir,
+                paragraph=paragraph,
+                image_max_w_in=image_max_w_in,
+                image_max_h_in=image_max_h_in,
+            )
+        pos = end
+    if pos < len(text):
+        _add_inline_to_paragraph(paragraph, text[pos:], mono=mono)
+
+
 def _set_run_font(run, name: str = "宋体", size_pt: float | None = None, bold: bool | None = None):
     run.font.name = name
     run._element.rPr.rFonts.set(qn("w:eastAsia"), name)
@@ -147,11 +444,31 @@ def _add_heading(doc: Document, level: int, text: str):
         _set_run_font(run, "黑体" if level <= 2 else "宋体")
 
 
-def _add_body_paragraph(doc: Document, text: str):
+def _add_body_paragraph(
+    doc: Document,
+    text: str,
+    base_dir: Path | None = None,
+    *,
+    image_max_h_in: float = _DEFAULT_IMAGE_MAX_H_IN,
+):
     p = doc.add_paragraph()
     p.paragraph_format.space_after = Pt(6)
     p.paragraph_format.line_spacing = 1.15
-    _add_inline_to_paragraph(p, text)
+    if (
+        _MD_IMAGE_RE.search(text)
+        or _HIDDEN_MD_IMAGE_COMMENT_RE.search(text)
+        or _INLINE_MATH_WITH_HIDDEN_IMG_RE.search(text)
+        or _INLINE_MATH_PAREN_WITH_HIDDEN_IMG_RE.search(text)
+    ):
+        _add_rich_content_to_paragraph(
+            p,
+            text,
+            base_dir,
+            image_max_w_in=_DEFAULT_IMAGE_MAX_W_IN,
+            image_max_h_in=image_max_h_in,
+        )
+    else:
+        _add_inline_to_paragraph(p, text)
     for run in p.runs:
         if run.font.name in (None, ""):
             _set_run_font(run, "宋体", 10.5)
@@ -168,7 +485,14 @@ def _add_code_block(doc: Document, lines: list[str]):
     run.font.color.rgb = RGBColor(0x20, 0x20, 0x20)
 
 
-def _add_list_item(doc: Document, text: str, ordered: bool, base_dir: Path | None):
+def _add_list_item(
+    doc: Document,
+    text: str,
+    ordered: bool,
+    base_dir: Path | None,
+    *,
+    image_max_h_in: float = _DEFAULT_IMAGE_MAX_H_IN,
+):
     style = "List Number" if ordered else "List Bullet"
     try:
         p = doc.add_paragraph(style=style)
@@ -176,7 +500,21 @@ def _add_list_item(doc: Document, text: str, ordered: bool, base_dir: Path | Non
         p = doc.add_paragraph()
         p.paragraph_format.left_indent = Inches(0.35)
     p.paragraph_format.space_after = Pt(3)
-    _add_inline_to_paragraph(p, text)
+    if (
+        _MD_IMAGE_RE.search(text)
+        or _HIDDEN_MD_IMAGE_COMMENT_RE.search(text)
+        or _INLINE_MATH_WITH_HIDDEN_IMG_RE.search(text)
+        or _INLINE_MATH_PAREN_WITH_HIDDEN_IMG_RE.search(text)
+    ):
+        _add_rich_content_to_paragraph(
+            p,
+            text,
+            base_dir,
+            image_max_w_in=_DEFAULT_IMAGE_MAX_W_IN,
+            image_max_h_in=image_max_h_in,
+        )
+    else:
+        _add_inline_to_paragraph(p, text)
     for run in p.runs:
         _set_run_font(run, "宋体", 10.5)
 
@@ -186,13 +524,79 @@ def _is_table_row(line: str) -> bool:
     return s.startswith("|") and s.endswith("|") and "|" in s[1:-1]
 
 
-def _parse_table_row(line: str) -> list[str]:
+def _split_table_cells(line: str) -> list[str]:
+    """按列分隔符 ``|`` 拆分表格行，忽略 ``\\(...\\)``、``$...$``、``<!-- -->`` 与 ``\\|`` 内的竖线。"""
     s = line.strip()
     if s.startswith("|"):
         s = s[1:]
     if s.endswith("|"):
         s = s[:-1]
-    return [c.strip() for c in s.split("|")]
+
+    cells: list[str] = []
+    buf: list[str] = []
+    i = 0
+    n = len(s)
+
+    while i < n:
+        if s.startswith("<!--", i):
+            end = s.find("-->", i)
+            if end == -1:
+                buf.append(s[i:])
+                break
+            buf.append(s[i : end + 3])
+            i = end + 3
+            continue
+
+        if s.startswith("\\(", i):
+            end = s.find("\\)", i + 2)
+            if end == -1:
+                buf.append(s[i:])
+                break
+            buf.append(s[i : end + 2])
+            i = end + 2
+            continue
+
+        if s[i] == "$":
+            if i + 1 < n and s[i + 1] == "$":
+                end = s.find("$$", i + 2)
+                if end == -1:
+                    buf.append(s[i:])
+                    break
+                buf.append(s[i : end + 2])
+                i = end + 2
+                continue
+            j = i + 1
+            while j < n:
+                if s[j] == "$" and (j == 0 or s[j - 1] != "\\"):
+                    buf.append(s[i : j + 1])
+                    i = j + 1
+                    break
+                j += 1
+            else:
+                buf.append(s[i:])
+                break
+            continue
+
+        if s[i] == "\\" and i + 1 < n and s[i + 1] == "|":
+            buf.append("\\|")
+            i += 2
+            continue
+
+        if s[i] == "|":
+            cells.append("".join(buf).strip())
+            buf = []
+            i += 1
+            continue
+
+        buf.append(s[i])
+        i += 1
+
+    cells.append("".join(buf).strip())
+    return cells
+
+
+def _parse_table_row(line: str) -> list[str]:
+    return _split_table_cells(line)
 
 
 def _is_table_sep(row: list[str]) -> bool:
@@ -201,7 +605,7 @@ def _is_table_sep(row: list[str]) -> bool:
     return all(re.match(r"^:?-{3,}:?$", c.strip()) for c in row if c.strip())
 
 
-def _add_table(doc: Document, rows: list[list[str]]):
+def _add_table(doc: Document, rows: list[list[str]], base_dir: Path | None = None):
     if not rows:
         return
     ncols = max(len(r) for r in rows)
@@ -213,7 +617,10 @@ def _add_table(doc: Document, rows: list[list[str]]):
             cell = table.rows[i].cells[j]
             cell.text = ""
             p = cell.paragraphs[0]
-            _add_inline_to_paragraph(p, cell_text)
+            if _line_has_embeddable_images(cell_text):
+                _add_rich_content_to_paragraph(p, cell_text, base_dir)
+            else:
+                _add_inline_to_paragraph(p, cell_text)
             for run in p.runs:
                 _set_run_font(run, "宋体", 10)
 
@@ -227,6 +634,13 @@ def _add_horizontal_rule(doc: Document):
     run.font.color.rgb = RGBColor(0xAA, 0xAA, 0xAA)
 
 
+def _resolve_image_path(src: str, base_dir: Path | None) -> Path | None:
+    if not base_dir:
+        return None
+    path = (base_dir / src).resolve() if not Path(src).is_absolute() else Path(src)
+    return path if path.is_file() else None
+
+
 def _try_add_image(
     doc: Document,
     line: str,
@@ -235,28 +649,52 @@ def _try_add_image(
     max_w_in: float = _DEFAULT_IMAGE_MAX_W_IN,
     max_h_in: float = _DEFAULT_IMAGE_MAX_H_IN,
 ) -> bool:
-    m = re.match(r"!\[([^\]]*)\]\(([^)]+)\)", line.strip())
+    m = _MD_IMAGE_RE.match(line.strip())
     if not m or not base_dir:
         return False
     alt, src = m.group(1), m.group(2).strip()
-    path = (base_dir / src).resolve() if not Path(src).is_absolute() else Path(src)
-    if not path.is_file():
-        p = doc.add_paragraph()
-        p.add_run(f"[图片缺失: {alt or src} — {path}]")
-        return True
-    try:
-        dims = _image_pixel_size(path)
-        if dims:
-            w_in, h_in = _fit_image_display_inches(
-                *dims, max_w_in=max_w_in, max_h_in=max_h_in
-            )
-            doc.add_picture(str(path), width=w_in, height=h_in)
-        else:
-            doc.add_picture(str(path), width=Inches(max_w_in))
-    except Exception:
-        p = doc.add_paragraph()
-        p.add_run(f"[图片无法嵌入: {path}]")
+    _embed_from_image_ref(
+        alt,
+        src,
+        base_dir,
+        doc=doc,
+        image_max_w_in=max_w_in,
+        image_max_h_in=max_h_in,
+    )
     return True
+
+
+def _line_has_embeddable_images(line: str) -> bool:
+    return bool(
+        _MD_IMAGE_RE.search(line)
+        or _HIDDEN_MD_IMAGE_COMMENT_RE.search(line)
+        or _INLINE_MATH_WITH_HIDDEN_IMG_RE.search(line)
+        or _INLINE_MATH_PAREN_WITH_HIDDEN_IMG_RE.search(line)
+    )
+
+
+def _add_paragraph_with_inline_images(
+    doc: Document,
+    line: str,
+    base_dir: Path | None,
+    *,
+    max_w_in: float = _DEFAULT_IMAGE_MAX_W_IN,
+    max_h_in: float = _DEFAULT_IMAGE_MAX_H_IN,
+) -> None:
+    """段落内混排文字与公式/插图（含 HTML 注释隐藏引用）。"""
+    p = doc.add_paragraph()
+    p.paragraph_format.space_after = Pt(6)
+    p.paragraph_format.line_spacing = 1.15
+    _add_rich_content_to_paragraph(
+        p,
+        line,
+        base_dir,
+        image_max_w_in=max_w_in,
+        image_max_h_in=max_h_in,
+    )
+    for run in p.runs:
+        if run.font.name in (None, ""):
+            _set_run_font(run, "宋体", 10.5)
 
 
 def convert_md_to_docx(
@@ -289,7 +727,12 @@ def convert_md_to_docx(
         for p in para_buf:
             t = p.strip()
             if t:
-                _add_body_paragraph(doc, t)
+                _add_body_paragraph(
+                    doc,
+                    t,
+                    base_dir,
+                    image_max_h_in=image_max_h_in,
+                )
         para_buf = []
 
     while i < len(lines):
@@ -312,19 +755,115 @@ def convert_md_to_docx(
                 i += 1
             if i < len(lines):
                 i += 1
+            # 定稿 MD 保留 mermaid 源码 + 图示注释：Word 只嵌 PNG，不写源码块
+            if fence_lang.lower() == "mermaid":
+                j = i
+                while j < len(lines) and lines[j].strip() == "":
+                    j += 1
+                if j < len(lines):
+                    cm = _HIDDEN_MD_IMAGE_COMMENT_RE.match(lines[j].strip())
+                    if cm and _is_diagram_image(cm.group(1), cm.group(2).strip()):
+                        continue
             _add_code_block(doc, code_lines)
             continue
 
-        # 图片独占一行
-        if line.strip().startswith("![") and "](" in line:
+        # 块级公式：\[ ... \] + 可选 HTML 注释
+        if line.strip() == "\\[":
             flush_paragraph()
-            _try_add_image(
+            i += 1
+            math_lines: list[str] = []
+            while i < len(lines) and lines[i].strip() != "\\]":
+                math_lines.append(lines[i])
+                i += 1
+            if i < len(lines):
+                i += 1
+            hidden: tuple[str, str] | None = None
+            if i < len(lines):
+                cm = _HIDDEN_MD_IMAGE_COMMENT_RE.match(lines[i].strip())
+                if cm:
+                    hidden = (cm.group(1), cm.group(2).strip())
+                    i += 1
+            if hidden and _formula_image_kind(*hidden):
+                ipath = _resolve_image_path(hidden[1], base_dir)
+                if ipath:
+                    _embed_from_image_ref(
+                        hidden[0],
+                        hidden[1],
+                        base_dir,
+                        doc=doc,
+                        image_max_w_in=image_max_w_in,
+                        image_max_h_in=image_max_h_in,
+                    )
+                    continue
+            _add_math_fallback_block(doc, ["\\[", *math_lines, "\\]"])
+            continue
+
+        # 块级公式：$$ ... $$ + 可选 HTML 注释（Word 嵌 PNG；预览见 LaTeX 原文）
+        if line.strip() == "$$":
+            flush_paragraph()
+            i += 1
+            math_lines: list[str] = []
+            while i < len(lines) and lines[i].strip() != "$$":
+                math_lines.append(lines[i])
+                i += 1
+            if i < len(lines):
+                i += 1
+            hidden: tuple[str, str] | None = None
+            if i < len(lines):
+                cm = _HIDDEN_MD_IMAGE_COMMENT_RE.match(lines[i].strip())
+                if cm:
+                    hidden = (cm.group(1), cm.group(2).strip())
+                    i += 1
+            if hidden and _formula_image_kind(*hidden):
+                ipath = _resolve_image_path(hidden[1], base_dir)
+                if ipath:
+                    _embed_from_image_ref(
+                        hidden[0],
+                        hidden[1],
+                        base_dir,
+                        doc=doc,
+                        image_max_w_in=image_max_w_in,
+                        image_max_h_in=image_max_h_in,
+                    )
+                    continue
+            _add_math_fallback_block(doc, math_lines)
+            continue
+
+        # 独立 HTML 注释行（公式图 / mermaid 框图引用）
+        if _HIDDEN_MD_IMAGE_COMMENT_RE.fullmatch(line.strip()):
+            flush_paragraph()
+            _try_embed_hidden_comment_line(
                 doc,
                 line,
                 base_dir,
-                max_w_in=image_max_w_in,
-                max_h_in=image_max_h_in,
+                image_max_w_in=image_max_w_in,
+                image_max_h_in=image_max_h_in,
             )
+            i += 1
+            continue
+
+        # 图片行或含行内公式/注释的段落
+        if _line_has_embeddable_images(line):
+            flush_paragraph()
+            stripped = line.strip()
+            if _MD_IMAGE_RE.fullmatch(stripped) or (
+                stripped.startswith("![") and stripped.count("![") == 1
+            ):
+                _try_add_image(
+                    doc,
+                    line,
+                    base_dir,
+                    max_w_in=image_max_w_in,
+                    max_h_in=image_max_h_in,
+                )
+            else:
+                _add_paragraph_with_inline_images(
+                    doc,
+                    line,
+                    base_dir,
+                    max_w_in=image_max_w_in,
+                    max_h_in=image_max_h_in,
+                )
             i += 1
             continue
 
@@ -368,14 +907,20 @@ def convert_md_to_docx(
                 if not _is_table_sep(row):
                     table_rows.append(row)
                 i += 1
-            _add_table(doc, table_rows)
+            _add_table(doc, table_rows, base_dir)
             continue
 
         # 无序列表
         um = re.match(r"^(\s*)[-*+]\s+(.+)$", line)
         if um:
             flush_paragraph()
-            _add_list_item(doc, um.group(2).strip(), ordered=False, base_dir=base_dir)
+            _add_list_item(
+                doc,
+                um.group(2).strip(),
+                ordered=False,
+                base_dir=base_dir,
+                image_max_h_in=image_max_h_in,
+            )
             i += 1
             continue
 
@@ -383,7 +928,13 @@ def convert_md_to_docx(
         om = re.match(r"^(\s*)\d+\.\s+(.+)$", line)
         if om:
             flush_paragraph()
-            _add_list_item(doc, om.group(2).strip(), ordered=True, base_dir=base_dir)
+            _add_list_item(
+                doc,
+                om.group(2).strip(),
+                ordered=True,
+                base_dir=base_dir,
+                image_max_h_in=image_max_h_in,
+            )
             i += 1
             continue
 
@@ -417,6 +968,11 @@ def main(argv: list[str] | None = None) -> int:
         metavar="IN",
         help=f"插图最大高度（英寸，默认 {_DEFAULT_IMAGE_MAX_H_IN}），避免竖图仅按宽度缩放后超出单页可视区域",
     )
+    p.add_argument(
+        "--no-math-render",
+        action="store_true",
+        help="不自动调用 math_render（默认会先渲染 $ / $$ 公式为 PNG）",
+    )
     args = p.parse_args(argv)
 
     in_path = Path(args.input).resolve()
@@ -430,6 +986,9 @@ def main(argv: list[str] | None = None) -> int:
     except UnicodeDecodeError:
         md_text = in_path.read_text(encoding="utf-8", errors="replace")
         print("警告：输入文件含非 UTF-8 字节，已使用替换字符解码后继续转换。", file=sys.stderr)
+
+    if not args.no_math_render:
+        md_text = _maybe_render_math_md(md_text, base)
 
     doc = convert_md_to_docx(
         md_text,
