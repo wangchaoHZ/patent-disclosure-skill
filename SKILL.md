@@ -1,23 +1,21 @@
-name patent-disclosure-skill
-description 通用中国专利挖掘发现与交底书生成全流程：扫描项目文档挖掘专利点、讨论融合、基于脱敏模版生成技术交底书、联网查新、生成后自检含逻辑闭环与公式参数一致性。| Patent mining, disclosure drafting, prior-art search, and consistency self-check.
-version 1.8.9-codex
-user-invocable true
-argument-hint [可选：项目路径或技术主题关键词]
-allowed-tools Read, Write, Edit, Grep, Glob, WebSearch, Bash
+---
+name: patent-disclosure-skill
+description: "通用中国专利挖掘发现与交底书生成全流程：扫描项目文档挖掘专利点、讨论融合、基于脱敏模版生成技术交底书、联网查新、生成后自检含逻辑闭环与公式参数一致性。"
+---
 
 # 专利挖掘与交底书生成
 
-本技能覆盖 专利点挖掘 → 查新与差异化 → 交底书生成 → 自检完善 全流程；分步指令在 `prompts/`，每步执行前 `Read` 对应文件，与步骤的对照见「Prompt 文件映射」。
+本技能覆盖 专利点挖掘 → 查新与差异化 → 交底书生成 → 自检完善 全流程；分步指令在 `prompts/`，每步执行前读取对应文件，与步骤的对照见「Prompt 文件映射」。
 
 ## 环境与约定
 
 * 语言：默认与用户语种一致；专利与法律术语采用行业常用表述。
-* 路径约定：本技能不依赖 `CLAUDE_SKILL_DIR`。技能根目录是包含当前 `SKILL.md` 的目录。
+* 路径约定：本技能不依赖 Claude 旧版技能目录变量。技能根目录是包含当前 `SKILL.md` 的目录。
 * 在 Codex 或其他 Agent 环境中，凡看到 `{技能根目录}`，均应解析为当前 `SKILL.md` 所在目录的绝对路径。
 * 读取分步 prompt 时，使用 `{技能根目录}/prompts/*.md`。
 * 执行工具脚本时，优先使用 `{技能根目录}/tools/*.py` 的绝对路径；也可先 `cd {技能根目录}`，再执行 `python3 tools/xxx.py`。
-* 不要使用、假设或要求存在 `CLAUDE_SKILL_DIR` 环境变量。
-* 图示定稿（Step 7）：3.2/3.4 用 fenced mermaid；执行方式、`mmdc` 安装与降级规则见下表「交底书定稿交付」行及 `tools/README.md`。
+* 不要使用、假设或要求存在 Claude 旧版技能目录环境变量。
+* 图示定稿：3.2 系统框图与 3.4 流程图优先使用 fenced mermaid；执行方式、`mmdc` 安装与降级规则见 `tools/README.md`。
 
 ---
 
@@ -25,10 +23,29 @@ allowed-tools Read, Write, Edit, Grep, Glob, WebSearch, Bash
 
 在用户使用以下任一方式时启用本技能：
 
-* 明确提及：专利挖掘、专利点、技术交底书、交底书、专利交底书、查新、现有技术对比等
-* 斜杠或简短指令：如 `/patent-disclosure-skill`、`/patent-disclosure`、`/交底书`
-* Codex 显式调用：如 `$patent-disclosure-skill`
-* 迭代模式（按意图识别）：当用户意图明显是在 已有交底书或上一轮输出 上继续工作（如改章节、补实施例、补材料、修正参数/事实、调整表述等），无需 用户写出「迭代」等固定词，也 不必 询问是否进入迭代——Agent 应 `Read` `{技能根目录}/prompts/iteration_context.md`，再 `Read` `{技能根目录}/prompts/merger.md`（侧重 新材料、扩展合并）或 `{技能根目录}/prompts/correction_handler.md`（侧重 纠错、与事实或风格不符），严格按该文件开头的「执行门禁」（优先执行，不可跳过）做完合并或纠正，另存为新文件：`{案件名}_{YYYYMMDDHHmmss}.md` 与同名 `.docx`（与首次定稿同一命名规则，见 `disclosure_builder.md` §7.3 第 5 点），不覆盖 旧稿（除非用户明确要求）。禁止 在迭代意图已成立时默认回到 Step 3–4 专利点全文分析（除非用户明确要求重新挖掘专利点）。对话中 已出现 交底书路径、附件或上文刚交付的草稿时，优先按迭代处理。
+* 明确提及：专利挖掘、专利点、技术交底书、交底书、专利交底书、查新、现有技术对比等。
+* 显式调用：如 `$patent-disclosure-skill`。
+* 迭代模式：当用户意图明显是在已有交底书或上一轮输出上继续工作，例如改章节、补实施例、补材料、修正参数、修正事实、调整表述等，无需用户写出“迭代”等固定词，也不必询问是否进入迭代。
+* 对话中已出现交底书路径、附件或上文刚交付的草稿时，优先按迭代处理。
+
+迭代时应读取：
+
+1. `{技能根目录}/prompts/iteration_context.md`
+2. 根据意图选择：
+
+   * 新材料、扩展、补充：`{技能根目录}/prompts/merger.md`
+   * 纠错、事实修正、参数修正、风格不符：`{技能根目录}/prompts/correction_handler.md`
+
+迭代输出必须另存为新文件：
+
+```text
+{案件名}_{YYYYMMDDHHmmss}.md
+{案件名}_{YYYYMMDDHHmmss}.docx
+```
+
+除非用户明确要求覆盖旧稿，否则禁止覆盖旧稿。
+
+禁止在迭代意图已成立时默认回到专利点全文分析流程，除非用户明确要求重新挖掘专利点。
 
 ---
 
@@ -36,76 +53,392 @@ allowed-tools Read, Write, Edit, Grep, Glob, WebSearch, Bash
 
 按任务选用能力；具体工具名称以当前 Agent 环境为准。
 
-若扫描范围内含 Word（.docx） 或 PowerPoint（.pptx），须在 Step 2 纳入阅读前用本仓库 `docx_to_md.py` / `pptx_to_md.py` 转为 Markdown；依赖 `pip install -r requirements.txt`，命令与说明见下表对应行。
+若扫描范围内含 Word `.docx` 或 PowerPoint `.pptx`，须在 Step 2 纳入阅读前用本仓库工具转换为 Markdown。
 
 ### 常见任务与建议方式
 
-| 任务                                      | 建议方式                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 加载分步指令                                  | `Read` → `{技能根目录}/prompts/*.md`，见下表                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| 读代码、设计文档、PDF、图片                         | 文件读取工具；大仓库先用搜索/语义检索定位再精读                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Word（.docx）→ Markdown + 抽取图片（扫描前）       | `Bash` → `cd "{技能根目录}" && python3 tools/docx_to_md.py --input "{path}.docx" --output "{dir}/{name}.md"`；图片默认写入与 `.md` 同级的 `{name}_media/`；需 `pip install -r requirements.txt`（含 mammoth）；复杂版式可改由所内导出 PDF/MD 再扫                                                                                                                                                                                                                                          |
-| PowerPoint（.pptx）→ Markdown + 抽取图片（扫描前） | `Bash` → `cd "{技能根目录}" && python3 tools/pptx_to_md.py --input "{path}.pptx" --output "{dir}/{name}.md"`；默认 `{name}_media/`；需 `pip install -r requirements.txt`（含 python-pptx）；旧版 .ppt 不支持，请先另存为 `.pptx`；图表/SmartArt 等若未以图片形状嵌入则可能仅能从备注或另行导出补全                                                                                                                                                                                                           |
-| 罗列目录、按名找文件                              | 目录列举 / 按文件名搜索                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| 联网查新（Step 5）                            | 执行前 `Read` `{技能根目录}/prompts/prior_art_search.md`。中国专利公布公告：优先 `Bash` 运行 `{技能根目录}/tools/cnipa_epub_search.py`；须在生成命令前 归纳 2～8 个相关度高的语义块；执行时须分多次调用，每次仅传一个 词块，自行按 `pub_number` 合并 多轮 `EPUB_HITS_JSON`（勿单次工具调用堆多个 argv，见该 prompt）。一步拉取+解析、不写 HTML 落盘；须 `pip install -r {技能根目录}/tools/requirements-cnipa.txt` 且 `python -m playwright install chromium`。`abstract` 规定必用 同该 prompt。需整句一次 AND 或保存 HTML 时用 `{技能根目录}/tools/cnipa_epub_crawler.py`；异常或无果再 WebSearch |
-| 交底书定稿交付（须同时 .md + .docx）                | 3.2 系统框图与 3.4 流程图均用 fenced `mermaid`，不要 ASCII 文字流程图/框图。定稿执行 `{技能根目录}/tools/mermaid_render.py`：mermaid 转 PNG（失败块保留围栏）后默认生成同名 .docx；若 Word 失败，按 stderr 提示手动运行 `{技能根目录}/tools/md_to_docx.py`。详见 `tools/README.md`                                                                                                                                                                                                                                          |
-| 保存交底书路径                                 | 写入用户指定路径；未指定时可建议 `./outputs/{案件标识}/`；凡交付的 `.md` / `.docx` 须为 `{案件名}_{YYYYMMDDHHmmss}`（§7.3 第 5 点，含首次定稿与迭代），勿默认覆盖旧稿；`outputs/` 整目录默认由 `.gitignore` 忽略                                                                                                                                                                                                                                                                                                    |
-| 迭代对话留档                                  | 每轮 merger / correction 交付后，在案件目录追加 `交底书修订对话记录.md`（`{技能根目录}/tools/iteration_dialog_log.py` 或等价手工），见 `{技能根目录}/prompts/iteration_context.md`                                                                                                                                                                                                                                                                                                               |
+| 任务                            | 建议方式                                                                                                                                                                            |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 加载分步指令                        | 读取 `{技能根目录}/prompts/*.md`                                                                                                                                                       |
+| 读代码、设计文档、PDF、图片               | 使用当前 Agent 可用的文件读取、搜索或语义检索能力；大仓库先搜索定位再精读                                                                                                                                        |
+| Word `.docx` 转 Markdown       | 运行：`cd "{技能根目录}" && python3 tools/docx_to_md.py --input "{path}.docx" --output "{dir}/{name}.md"`；图片默认写入同级 `{name}_media/`；依赖 `pip install -r requirements.txt`                 |
+| PowerPoint `.pptx` 转 Markdown | 运行：`cd "{技能根目录}" && python3 tools/pptx_to_md.py --input "{path}.pptx" --output "{dir}/{name}.md"`；图片默认写入同级 `{name}_media/`；依赖 `pip install -r requirements.txt`                 |
+| 罗列目录、按名找文件                    | 使用目录列举、文件名搜索、全文搜索                                                                                                                                                               |
+| 联网查新                          | 执行前读取 `{技能根目录}/prompts/prior_art_search.md`。中国专利公布公告优先运行 `{技能根目录}/tools/cnipa_epub_search.py`；须先归纳 2～8 个相关度高的语义块；执行时须分多次调用，每次仅传一个词块，自行按 `pub_number` 合并多轮结果；异常或无果再使用 WebSearch  |
+| 交底书定稿交付                       | `.md` 与 `.docx` 必须同时交付。3.2 系统框图与 3.4 流程图优先用 fenced `mermaid`，不要使用 ASCII 文字流程图/框图。定稿执行 `{技能根目录}/tools/mermaid_render.py`；如果 Word 失败，再按 stderr 提示运行 `{技能根目录}/tools/md_to_docx.py` |
+| 保存交底书路径                       | 写入用户指定路径；未指定时建议 `./outputs/{案件标识}/`；凡交付的 `.md` / `.docx` 文件名须带 `{案件名}_{YYYYMMDDHHmmss}` 时间戳                                                                                     |
+| 迭代对话留档                        | 每轮 merger / correction 交付后，在案件目录追加 `交底书修订对话记录.md`，可运行 `{技能根目录}/tools/iteration_dialog_log.py` 或等价手工记录                                                                           |
 
 ---
 
 ## Prompt 文件映射
 
-| 步骤       | 文件                                                                                | 用途                                                                          |
-| -------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| Step 1   | `{技能根目录}/prompts/intake.md`                                                       | 边界与输入问题                                                                     |
-| Step 2   | `{技能根目录}/prompts/project_scan.md`                                                 | 项目文档扫描；须 对 `.docx`/`.pptx` 先转换再读（见该文件「Office 文档」节）；独立图片目录可跳过                |
-| Step 3–4 | `{技能根目录}/prompts/patent_points_analyzer.md`                                       | 候选专利点、融合与选定                                                                 |
-| Step 5   | `{技能根目录}/prompts/prior_art_search.md`                                             | 联网查新与分析要求                                                                   |
-| Step 6   | `{技能根目录}/prompts/disclosure_preview.md`                                           | 全文前的摘要预览                                                                    |
-| Step 7   | `{技能根目录}/prompts/disclosure_builder.md` + `{技能根目录}/prompts/template_reference.md` | 交底书结构、脱敏、**符号与公式体例（§7.7）**与图示规范；mermaid 与 3.4.1 符号/公式范例在 template_reference |
-| Step 8   | `{技能根目录}/prompts/disclosure_self_check.md`                                        | 内部自检，不写入正文                                                                  |
-| 迭代       | `{技能根目录}/prompts/iteration_context.md`                                            | 迭代意图、落盘命名、修订对话记录 md（含对话/记录时间）                                               |
-| 迭代       | `{技能根目录}/prompts/merger.md`                                                       | 新材料增量合并；文首含门禁；输出 `{案件名}_{时间戳}.md`/`.docx`                                   |
-| 迭代       | `{技能根目录}/prompts/correction_handler.md`                                           | 对话纠正；文首含门禁；输出 `{案件名}_{时间戳}.md`/`.docx`                                      |
+| 步骤       | 文件                                                                                | 用途                          |
+| -------- | --------------------------------------------------------------------------------- | --------------------------- |
+| Step 1   | `{技能根目录}/prompts/intake.md`                                                       | 边界与输入问题                     |
+| Step 2   | `{技能根目录}/prompts/project_scan.md`                                                 | 项目文档扫描；若目录含 Office 文档，先转换再读 |
+| Step 3–4 | `{技能根目录}/prompts/patent_points_analyzer.md`                                       | 候选专利点、融合与选定                 |
+| Step 5   | `{技能根目录}/prompts/prior_art_search.md`                                             | 联网查新与分析要求                   |
+| Step 6   | `{技能根目录}/prompts/disclosure_preview.md`                                           | 全文生成前的摘要预览                  |
+| Step 7   | `{技能根目录}/prompts/disclosure_builder.md` 与 `{技能根目录}/prompts/template_reference.md` | 交底书结构、脱敏、符号与公式体例、图示规范       |
+| Step 8   | `{技能根目录}/prompts/disclosure_self_check.md`                                        | 内部自检，不写入正文                  |
+| 迭代       | `{技能根目录}/prompts/iteration_context.md`                                            | 迭代意图、落盘命名、修订对话记录            |
+| 迭代       | `{技能根目录}/prompts/merger.md`                                                       | 新材料增量合并                     |
+| 迭代       | `{技能根目录}/prompts/correction_handler.md`                                           | 对话纠正、事实纠正、参数纠正              |
 
 ---
 
-## 主流程（执行顺序）
+## 主流程
 
-1. `Read` `{技能根目录}/prompts/intake.md` → 执行 Step 1
-2. `Read` `{技能根目录}/prompts/project_scan.md` → 执行 Step 2
-3. `Read` `{技能根目录}/prompts/patent_points_analyzer.md` → 执行 Step 3–4
-4. `Read` `{技能根目录}/prompts/prior_art_search.md` → 执行 Step 5
-5. `Read` `{技能根目录}/prompts/disclosure_preview.md` → 执行 Step 6；用户可跳过
-6. `Read` `{技能根目录}/prompts/disclosure_builder.md` 与 `Read` `{技能根目录}/prompts/template_reference.md` → 执行 Step 7（首次交付 的 `.md`/`.docx` 亦须 `{案件名}_{YYYYMMDDHHmmss}`，§7.3 第 5 点）；交付对话中 须 按 `disclosure_builder.md` §7.6 补充「权利要求偏向点」建议交互（仅对话，不入正文）
-7. `Read` `{技能根目录}/prompts/disclosure_self_check.md` → 内部执行 Step 8，修订后交付
+### Step 1：需求澄清与边界确认
 
-禁止：交底书正文中包含「自检清单」章节；自检仅内部使用。
+执行前读取：
+
+```text
+{技能根目录}/prompts/intake.md
+```
+
+目标：
+
+* 明确技术主题、应用场景、输入资料范围。
+* 明确用户希望先挖掘专利点，还是直接生成交底书。
+* 明确是否需要联网查新。
+* 明确输出格式：Markdown、Word、是否需要图示、是否需要权利要求偏向建议。
+
+如果用户输入已经足够，不要过度追问，可以直接进入 Step 2。
 
 ---
 
-## 迭代模式（摘要）
+### Step 2：项目扫描
 
-启用方式：根据用户 自然语言意图 判断（见上文「触发条件」），不要求 固定关键词，默认不 为「是否迭代」打断用户。
+执行前读取：
 
-* 补充材料 / 扩展章节 或 §7.6 第五章权利要求书式强化（用户已声明侧重点）：`Read` → `{技能根目录}/prompts/iteration_context.md` → `{技能根目录}/prompts/merger.md`；合并结果 另存为 带时间戳的 `.md`/`.docx`（§7.3 第 5 点）；追加 `交底书修订对话记录.md`（`{技能根目录}/tools/iteration_dialog_log.py` 或手工）；完成后 必须 输出「合并摘要」留档；若本轮亦为定稿交付，仍建议 简短附带 §7.6 类引导
-* 指出错误 / 与事实或参数不符：`Read` → `{技能根目录}/prompts/iteration_context.md` → `{技能根目录}/prompts/correction_handler.md`；纠正结果 另存为 带时间戳的 `.md`/`.docx`；追加 对话记录；完成后 必须 输出「纠正摘要」留档；定稿交付时 还须 按 `disclosure_builder.md` §7.6 附「权利要求偏向点」引导（见 `correction_handler.md` 末尾）
+```text
+{技能根目录}/prompts/project_scan.md
+```
 
-主流程 Step 7→8 的 `disclosure_self_check.md` 仍在新稿定稿路径上内部执行。
+目标：
+
+* 扫描用户指定目录或当前项目目录。
+* 识别代码、设计文档、说明书、测试数据、流程图、架构图。
+* 若存在 `.docx` 或 `.pptx`，先转换为 Markdown 再阅读。
+* 对于大项目，应先建立文件清单，再选择关键文件精读。
+* 形成项目理解摘要，包括：
+
+  * 系统组成
+  * 核心流程
+  * 关键模块
+  * 关键参数
+  * 用户真正可能想保护的技术点
+
+---
+
+### Step 3：候选专利点挖掘
+
+执行前读取：
+
+```text
+{技能根目录}/prompts/patent_points_analyzer.md
+```
+
+目标：
+
+* 从项目资料中提取多个候选专利点。
+* 每个候选专利点应包含：
+
+  * 技术问题
+  * 技术方案
+  * 有益效果
+  * 区别于常规实现的创新点
+  * 可授权性初评
+  * 工程落地性
+  * 风险点
+
+候选专利点不要只写概念，要尽量落到方法步骤、模块协同、参数判定、状态机、数据处理、控制策略、异常处理等可保护内容。
+
+---
+
+### Step 4：专利点融合与选定
+
+继续使用：
+
+```text
+{技能根目录}/prompts/patent_points_analyzer.md
+```
+
+目标：
+
+* 对候选专利点进行合并、拆分、排序。
+* 判断哪些适合写一件发明，哪些适合作为从属方案或备选主题。
+* 给出推荐主题名称。
+* 给出保护边界建议。
+
+输出应包括：
+
+* 首选专利主题
+* 备选专利主题
+* 不建议作为主案的点
+* 建议写入交底书的核心技术特征
+* 建议不要写死的数据、品牌、厂家、具体实验结论等
+
+---
+
+### Step 5：查新与现有技术对比
+
+执行前读取：
+
+```text
+{技能根目录}/prompts/prior_art_search.md
+```
+
+目标：
+
+* 围绕选定专利主题进行联网查新。
+* 优先检索中国专利公布公告。
+* 必要时检索论文、标准、公开项目、产品说明。
+* 总结最接近现有技术。
+* 提炼区别特征。
+* 调整交底书表达，使其更强调技术方案本身，而非泛泛效果。
+
+查新结论应写入交底书背景技术和区别论述，但不要把查新过程原样塞进正文。
+
+---
+
+### Step 6：交底书摘要预览
+
+执行前读取：
+
+```text
+{技能根目录}/prompts/disclosure_preview.md
+```
+
+目标：
+
+* 在生成全文前，先给用户一个摘要预览。
+* 摘要预览应包括：
+
+  * 发明名称
+  * 技术领域
+  * 背景问题
+  * 核心方案
+  * 关键创新点
+  * 预期有益效果
+  * 主要实施步骤
+  * 图示建议
+
+如果用户明确要求跳过摘要预览，可以直接进入 Step 7。
+
+---
+
+### Step 7：生成技术交底书
+
+执行前读取：
+
+```text
+{技能根目录}/prompts/disclosure_builder.md
+{技能根目录}/prompts/template_reference.md
+```
+
+目标：
+
+* 生成完整技术交底书。
+* 正文必须聚焦技术方案，不要写成项目汇报。
+* 不要把未经验证的实际应用数据写成确定效果。
+* 对于公式、参数、符号，必须统一命名、统一下标、统一单位。
+* 图示优先使用 mermaid，并在最终 Word 中转为图片。
+* 文件名必须带时间戳。
+
+交底书建议结构：
+
+1. 发明名称
+2. 技术领域
+3. 背景技术
+4. 发明内容
+
+   * 要解决的技术问题
+   * 技术方案
+   * 有益效果
+5. 附图说明
+6. 具体实施方式
+
+   * 系统结构
+   * 数据输入
+   * 方法流程
+   * 判断逻辑
+   * 控制策略
+   * 异常处理
+   * 可选实施例
+7. 可保护的关键技术特征
+8. 权利要求偏向建议
+
+注意：
+
+* 正文中不要出现“本技能”“根据 skill”“根据 ChatGPT”等表述。
+* 正文中不要出现自检清单。
+* 权利要求偏向建议可以在交付对话中给出，也可以作为交底书后附建议，但不要冒充正式权利要求书。
+
+---
+
+### Step 8：内部自检与修订
+
+执行前读取：
+
+```text
+{技能根目录}/prompts/disclosure_self_check.md
+```
+
+目标：
+
+* 在交付前内部检查并修订。
+* 检查项包括：
+
+  * 技术问题是否清楚
+  * 技术方案是否闭环
+  * 步骤之间是否有输入输出关系
+  * 公式是否正确
+  * 符号是否一致
+  * 参数是否前后一致
+  * 是否有未解释的缩写
+  * 是否过度依赖实验数据
+  * 是否泄露不该写入的项目敏感信息
+  * 是否存在无法实施的空泛表述
+  * 是否存在明显现有技术风险
+  * 是否有错别字和格式问题
+
+自检只用于内部修订，禁止在交底书正文中生成“自检清单”章节。
+
+---
+
+## 迭代模式
+
+当用户要求修改已有交底书时，不要重新走完整挖掘流程，除非用户明确要求重新挖掘。
+
+### 补充材料或扩展内容
+
+读取：
+
+```text
+{技能根目录}/prompts/iteration_context.md
+{技能根目录}/prompts/merger.md
+```
+
+要求：
+
+* 理解旧稿。
+* 理解新增材料。
+* 判断新增材料应进入哪个章节。
+* 合并时保持原稿结构和术语一致。
+* 另存为新文件。
+* 输出合并摘要。
+* 在案件目录追加 `交底书修订对话记录.md`。
+
+### 纠错或参数修正
+
+读取：
+
+```text
+{技能根目录}/prompts/iteration_context.md
+{技能根目录}/prompts/correction_handler.md
+```
+
+要求：
+
+* 明确错误位置。
+* 修正事实、参数、符号或逻辑。
+* 检查同类错误是否在全文多处出现。
+* 另存为新文件。
+* 输出纠正摘要。
+* 在案件目录追加 `交底书修订对话记录.md`。
+
+---
+
+## 输出要求
+
+### 候选专利点输出
+
+应包括：
+
+* 候选主题名称
+* 技术问题
+* 核心方案
+* 关键步骤
+* 创新点
+* 有益效果
+* 与常规方案区别
+* 授权前景判断
+* 风险点
+* 建议是否作为主案
+
+### 查新输出
+
+应包括：
+
+* 检索关键词
+* 近似现有技术
+* 与本方案相同或相近之处
+* 本方案区别特征
+* 可强化表达方向
+* 风险提示
+
+### 交底书输出
+
+应包括：
+
+* Markdown 文件
+* Word 文件
+* 必要时包括图片资源目录
+* 交付时说明输出路径
+* 交付时说明本稿适合交给专利代理人进一步撰写权利要求
+
+---
+
+## 禁止事项
+
+* 禁止把未查证的实际节能率、效率提升率、寿命提升率写成确定事实。
+* 禁止把用户未提供的数据编造成实验数据。
+* 禁止把项目代码变量名原样大量写入交底书正文，除非该变量名本身就是技术术语。
+* 禁止把供应商、客户、项目现场、设备编号等敏感信息直接写入正式交底书，除非用户明确要求。
+* 禁止在正文中出现“我是 AI”“根据对话”“根据 skill”等表述。
+* 禁止在正文中出现内部自检清单。
+* 禁止把普通工程实现强行包装成不成立的创新点。
+* 禁止在没有用户确认的情况下覆盖旧交底书文件。
+
+---
+
+## Codex 使用建议
+
+用户可这样调用本技能：
+
+```text
+$patent-disclosure-skill
+
+请扫描当前项目目录，围绕“某某技术方案”执行专利点挖掘，先输出候选专利点，不要直接生成交底书。
+```
+
+或者：
+
+```text
+$patent-disclosure-skill
+
+请扫描 ./materials/，围绕“某某技术方案”生成技术交底书，输出 Markdown 和 Word 到 ./outputs/。
+```
+
+如果当前目录不是技能根目录，执行工具时必须使用 `{技能根目录}` 解析脚本路径。
 
 ---
 
 ## Agent 自用工作流检查清单
 
-```
-□ 已按步骤 Read 对应 prompts；Step 2 若目录含 Office，已执行 docx_to_md / pptx_to_md 并读了产出 `.md`
-□ 所有 prompts 与 tools 路径均基于 `{技能根目录}` 解析；未使用 `CLAUDE_SKILL_DIR`
-□ 识别到「在已有交底书上修改」类意图时，已 Read `iteration_context.md` 并选用 merger 或 correction_handler（而非从头跑扫描）；交付为**新** `{案件名}_{时间戳}.md`/`.docx`，未无故覆盖旧稿
-□ 执行 merger / correction_handler 后，已在对话中输出该文件要求的留档摘要（合并摘要 / 纠正摘要）；案件目录已追加 **`交底书修订对话记录.md`**（或等价日志）
-□ 查新完成且写入 1.1 与区别论述（符合 `prior_art_search.md`：**优先** `tools/cnipa_epub_search.py`，**国知局侧已分多次调用、每轮一词，并已自行合并** `EPUB_HITS_JSON`；**`abstract` 必用且已充分理解后再概括**；异常或无果再 **WebSearch**）
-□ 除用户明确跳过外，完成摘要预览
-□ 脱敏、mermaid（定稿均已渲染为 PNG）、章节引用符合 template_reference；含公式时 **3.4.1 符号表、§7.7 体例**（维度下标、无字母多义、LaTeX 分隔符统一）及 **3.5 符号列同形** 已满足；**已交付 .md 与 .docx**，且**文件名符合 §7.3 第 5 点**（**凡交付均含**时间戳后缀）；**正文无**技能/示例仓库类文末脚注
-□ 定稿类对话已含 **`disclosure_builder.md` §7.6**「权利要求偏向点」建议交互（**不入正文**、**不捏造**未在稿内出现的保护取向）；迭代再走 merger 时见 **`iteration_context.md`** 表格补充行
-□ 自检在后台完成，正文无自检清单章节；含公式时已按 **`disclosure_self_check.md` §8.2** 复核**公式正确性与公式逻辑**（有误已在 Step 8 直接改稿）
-```
+* 已按步骤读取对应 prompts。
+* Step 2 若目录含 Office 文件，已执行 docx_to_md / pptx_to_md 并读取转换后的 Markdown。
+* 所有 prompts 与 tools 路径均基于 `{技能根目录}` 解析；未使用 Claude 旧版技能目录变量。
+* 识别到“在已有交底书上修改”类意图时，已读取 `iteration_context.md` 并选用 merger 或 correction_handler，而非从头跑扫描。
+* 迭代交付为新的 `{案件名}_{时间戳}.md` / `.docx`，未无故覆盖旧稿。
+* 执行 merger / correction_handler 后，已在对话中输出合并摘要或纠正摘要。
+* 案件目录已追加 `交底书修订对话记录.md` 或等价日志。
+* 查新完成且已写入背景技术和区别论述。
+* 除用户明确跳过外，完成摘要预览。
+* 脱敏、mermaid、章节引用、公式符号、单位、参数命名均已检查。
+* 已交付 `.md` 与 `.docx`，且文件名含时间戳。
+* 定稿类对话已补充“权利要求偏向点”建议交互。
+* 自检在后台完成，正文无自检清单章节。
